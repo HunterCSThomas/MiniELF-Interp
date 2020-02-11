@@ -1,0 +1,174 @@
+/*
+ * CS 261: Main driver
+ *
+ * Name: Hunter Thomas
+ */
+
+#include "p1-check.h"
+#include "p2-load.h"
+#include "p3-disas.h"
+#include "p4-interp.h"
+
+int main (int argc, char **argv)
+{
+
+    elf_hdr_t header;
+    bool isheader = false;
+    bool segments = false;
+    bool membrief = false;
+    bool memfull = false;
+    bool disas_code = false;
+    bool disas_data = false;
+    bool exec_normal = false;
+    bool exec_trace = false;
+    bool cond = false;
+    y86_reg_t valE = 0;
+    y86_reg_t valA = 0;
+    struct y86 cpu = {0};
+    struct y86_inst inst = {0};
+    char *filename;
+    FILE *file;
+
+    //parse file
+    if (parse_command_line_p4(argc, argv, &isheader, &segments, &membrief, &memfull, &disas_code,
+                              &disas_data, &exec_normal, &exec_trace, &filename)) {
+
+
+        if (filename != NULL) {
+            file = fopen(filename, "r");
+
+            //read header
+            if (!read_header(file, &header)) {
+                printf("Failed to read file\n");
+                return EXIT_FAILURE;
+            }
+
+            //if -H
+            if (isheader) {
+                dump_header(header);
+            }
+
+            //allocate memory for and initialize phdr[]
+            elf_phdr_t *programheader = (malloc(sizeof(elf_phdr_t)*header.e_num_phdr));
+            for (uint16_t i = 0; i < header.e_num_phdr; i++) {
+                if (!read_phdr(file, header.e_phdr_start + i*20, &programheader[i])) {
+                    free(programheader);
+                    printf("Failed to read file\n");
+                    return EXIT_FAILURE;
+                }
+            }
+
+            //if -s
+            if (segments) {
+                dump_phdrs(header.e_num_phdr, programheader);
+            }
+
+            byte_t *memory = (malloc(MEMSIZE));
+            for (uint16_t i = 0; i < header.e_num_phdr; i++) {
+                if (!load_segment(file, memory, programheader[i])) {
+                    free(programheader);
+                    free(memory);
+                    printf("Failed to read file\n");
+                    return EXIT_FAILURE;
+                }
+            }
+
+            //if -m
+            if (membrief) {
+                for (uint16_t i = 0; i < header.e_num_phdr; i++) {
+                    dump_memory(memory, programheader[i].p_vaddr, programheader[i].p_vaddr + programheader[i].p_filesz);
+                }
+            }
+
+            //if -M
+            if (memfull) {
+                dump_memory(memory, 0, MEMSIZE);
+            }
+
+            //if -d
+            if (disas_code) {
+                printf("Disassembly of executable contents:\n");
+                disassemble_code(memory, programheader, &header);
+            }
+
+	    //if -D
+            if (disas_data) {
+                printf("Disassembly of data contents:\n");
+                for (uint16_t i = 0; i < header.e_num_phdr; i++) {
+                    if (programheader[i].p_type == DATA) {
+                        switch(programheader[i].p_flag) {
+                        case RO:
+                            disassemble_rodata(memory, &programheader[i]);
+                            break;
+                        case RW:
+                            disassemble_data(memory, &programheader[i]);
+                            break;
+                        }
+                    }
+                }
+            }
+
+	    //if -e
+	    if (exec_normal) {
+		uint16_t i = 0;
+		cpu.pc = header.e_entry;
+		cpu.stat = AOK;
+		printf("Beginning execution at 0x%04lx\n", cpu.pc);
+		while (cpu.stat == AOK) {
+
+		    inst = fetch(&cpu, memory);
+		    valE = decode_execute(&cpu, &cond, inst, &valA);
+		    memory_wb_pc(&cpu, memory, cond, inst, valE, valA);
+		    if (cpu.stat != INS) {
+		        i++;
+		    }
+		}
+		dump_cpu_state(cpu);
+		printf("Total execution count: %d\n", i);
+	    }
+
+	    //if -E
+	    if (exec_trace) {
+		uint16_t i = 0;
+		cpu.pc = header.e_entry;
+		cpu.stat = AOK;
+		printf("Beginning execution at 0x%04lx\n", cpu.pc);
+		dump_cpu_state(cpu);
+		while (cpu.stat == AOK) {
+		    inst = fetch(&cpu, memory);
+		    if (cpu.stat != AOK) {
+			if (cpu.stat == INS) {
+			    printf("\nInvalid instruction at 0x%04lx\n", cpu.pc);
+			    dump_cpu_state(cpu);
+			}
+			break;
+		    }
+		    printf("\nExecuting: ");
+		    disassemble(inst);
+		    printf("\n");
+		    valE = decode_execute(&cpu, &cond, inst, &valA);
+		    memory_wb_pc(&cpu, memory, cond, inst, valE, valA);
+		    if (cpu.stat != INS) {
+		        i++;
+		    }
+		    dump_cpu_state(cpu);
+		}
+		printf("Total execution count: %d\n\n", i);
+                dump_memory(memory, 0, MEMSIZE);
+	    }
+
+
+            free(programheader);
+            free(memory);
+
+        } else {
+            usage_p4(argv);
+            return EXIT_SUCCESS;
+        }
+    } else {
+        usage_p4(argv);
+        return EXIT_FAILURE;
+    }
+
+}
+
